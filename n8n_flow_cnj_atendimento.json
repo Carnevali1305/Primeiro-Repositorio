@@ -1,0 +1,348 @@
+{
+  "name": "Atendimento CNJ - Assistente Jurídico",
+  "nodes": [
+    {
+      "id": "telegram-trigger",
+      "name": "1. 📥 Telegram Trigger",
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1,
+      "position": [
+        -3168,
+        224
+      ],
+      "parameters": {
+        "updates": [
+          "message"
+        ],
+        "additionalFields": {}
+      }
+    },
+    {
+      "id": "normalizar-dados",
+      "name": "2. ⚙️ Normalizar Dados",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [
+        -2944,
+        224
+      ],
+      "parameters": {
+        "keepOnlySet": true,
+        "values": {
+          "string": [
+            { "name": "chat_id", "value": "={{ $json.message.chat.id.toString() }}" },
+            { "name": "user_first_name", "value": "={{ $json.message.chat.first_name || 'Cliente' }}" },
+            { "name": "message_text", "value": "={{ ($json.message.text || '').toString() }}" }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "redis-get",
+      "name": "3. 💾 Redis: Get Session",
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [
+        -2720,
+        224
+      ],
+      "parameters": {
+        "operation": "get",
+        "propertyName": "state",
+        "key": "={{ $json.chat_id }}",
+        "keyType": "string",
+        "options": {}
+      }
+    },
+    {
+      "id": "cerebro",
+      "name": "4. 🧠 Cérebro da Conversa",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2496,
+        224
+      ],
+      "parameters": {
+        "jsCode": "// Recupera o estado salvo (se existir)\nlet state = {};\ntry {\n  const saved = $input.item.json.state;\n  if (saved) state = typeof saved === 'string' ? JSON.parse(saved) : saved;\n} catch (e) {\n  state = {};\n}\n\nconst msg = ($input.item.json.message_text || '').trim();\nconst msgLower = msg.toLowerCase();\nconst startKeywords = ['oi', 'olá', '/start', 'start'];\nconst isStart = startKeywords.includes(msgLower);\n\n// Reinicia fluxo quando usuário pede ou quando não há estado prévio\nif (isStart || !state.step) {\n  state = { chat_id: $input.item.json.chat_id, user_name: $input.item.json.user_first_name, step: 0, data: {}, attempts: 0 };\n}\n\nconst output = { action: 'ask', text: '', state };\n\n// Passo 0 - Saudação\nif (state.step === 0) {\n  output.text = `👋 Olá, ${state.user_name}! Sou seu assistente jurídico e vou te ajudar a ver o status do seu processo.\n\nPara começar, me informe seu *Nome Completo*:`;\n  state.step = 1;\n  return { json: output };\n}\n\n// Passo 1 - Nome completo\nif (state.step === 1) {\n  if (msg.length < 5 || !msg.includes(' ')) {\n    output.text = '⚠️ Preciso do nome completo, com nome e sobrenome. Pode enviar novamente?';\n    return { json: output };\n  }\n  state.data.nome = msg;\n  state.step = 2;\n  output.text = `Obrigada, ${msg.split(' ')[0]}!\n\nAgora preciso da sua *Data de Nascimento* no formato DD/MM/AAAA (ex: 15/05/1990):`;\n  return { json: output };\n}\n\n// Passo 2 - Data de nascimento\nif (state.step === 2) {\n  const dateRegex = /^(0[1-9]|[12][0-9]|3[01])\/(0[1-9]|1[0-2])\/(19|20)\d{2}$/;\n  if (!dateRegex.test(msg)) {\n    output.text = '⚠️ Formato inválido. Use DD/MM/AAAA (ex: 08/11/1989). Tente de novo:';\n    return { json: output };\n  }\n  state.data.nascimento = msg;\n  state.step = 3;\n  output.text = 'Anotado! Qual o nome completo do *Advogado(a)* responsável pelo processo?';\n  return { json: output };\n}\n\n// Passo 3 - Nome do advogado\nif (state.step === 3) {\n  if (msg.length < 5) {\n    output.text = '⚠️ O nome do advogado parece curto. Confirme o nome completo, por favor:';\n    return { json: output };\n  }\n  state.data.advogado = msg;\n  state.step = 4;\n  output.text = 'Perfeito! Agora digite o *Número do Processo* no padrão CNJ (20 dígitos). Pode enviar com ou sem pontos e traços:';\n  return { json: output };\n}\n\n// Passo 4 - Número do processo\nif (state.step === 4) {\n  const cleanNum = msg.replace(/[^0-9]/g, '');\n  const cnjRegex = /^\d{20}$/;\n  if (!cnjRegex.test(cleanNum)) {\n    output.text = '⚠️ O número deve ter 20 dígitos. Confira e envie novamente (ex: 0001234-56.2023.8.09.0001):';\n    return { json: output };\n  }\n\n  state.data.numero_processo = cleanNum;\n  state.data.numero_formatado = `${cleanNum.slice(0,7)}-${cleanNum.slice(7,9)}.${cleanNum.slice(9,13)}.${cleanNum.slice(13,14)}.${cleanNum.slice(14,16)}.${cleanNum.slice(16,20)}`;\n  state.step = 5;\n\n  output.text = '⏳ Entendido! Vou consultar os tribunais agora. Só um instante...';\n  output.action = 'search';\n  return { json: output };\n}\n\noutput.text = 'Não entendi. Digite /start para recomeçar ou envie um Oi para reiniciar.';\nreturn { json: output };"
+      }
+    },
+    {
+      "id": "redis-save",
+      "name": "5. 💾 Redis: Salvar Estado",
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [
+        -2288,
+        224
+      ],
+      "parameters": {
+        "operation": "set",
+        "key": "={{ $json.state.chat_id }}",
+        "value": "={{ JSON.stringify($json.state) }}",
+        "keyType": "string"
+      }
+    },
+    {
+      "id": "if-search",
+      "name": "6. 🔀 Ação: Pesquisar?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -2064,
+        224
+      ],
+      "parameters": {
+        "conditions": {
+          "string": [
+            { "value1": "={{ $json.action }}", "operation": "equals", "value2": "search" }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "telegram-ask",
+      "name": "7. 💬 Telegram: Responder",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [
+        -1840,
+        384
+      ],
+      "parameters": {
+        "chatId": "={{ $json.state.chat_id }}",
+        "text": "={{ $json.text }}",
+        "additionalFields": { "parse_mode": "Markdown" }
+      }
+    },
+    {
+      "id": "telegram-wait",
+      "name": "8. 💬 Telegram: Aguarde",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [
+        -1840,
+        48
+      ],
+      "parameters": {
+        "chatId": "={{ $json.state.chat_id }}",
+        "text": "={{ $json.text }}",
+        "additionalFields": { "parse_mode": "Markdown" }
+      }
+    },
+    {
+      "id": "identificar-tribunal",
+      "name": "9. 🎯 Identificar Tribunal",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1616,
+        48
+      ],
+      "parameters": {
+        "jsCode": "const num = $json.state.data.numero_processo;\nconst codigoJustica = num.substring(13, 15);\n\nconst map = {\n  '90': 'tst', '88': 'tse', '10': 'stj', '11': 'stm',\n  '01': 'trf1', '02': 'trf2', '03': 'trf3', '04': 'trf4', '05': 'trf5', '06': 'trf6',\n  '71': 'trt1', '72': 'trt2', '73': 'trt3', '74': 'trt4', '75': 'trt5', '76': 'trt6', '77': 'trt7', '78': 'trt8', '79': 'trt9', '80': 'trt10', '81': 'trt11', '82': 'trt12', '83': 'trt13', '84': 'trt14', '85': 'trt15', '86': 'trt16', '87': 'trt17', '89': 'trt18', '91': 'trt19', '92': 'trt20', '93': 'trt21', '94': 'trt22', '95': 'trt23', '96': 'trt24',\n  '12': 'tjac', '27': 'tjal', '23': 'tjam', '16': 'tjap', '13': 'tjba', '06': 'tjce', '07': 'tjdft', '08': 'tjes', '09': 'tjgo', '21': 'tjma', '14': 'tjmg', '51': 'tjms', '11': 'tjmt', '15': 'tjpa', '19': 'tjpb', '17': 'tjpe', '18': 'tjpi', '20': 'tjpr', '22': 'tjrj', '24': 'tjrn', '40': 'tjro', '41': 'tjrr', '25': 'tjrs', '52': 'tjsc', '26': 'tjse', '28': 'tjsp', '53': 'tjto'\n};\n\nconst endpoint = map[codigoJustica];\n\nif (endpoint) {\n  return { json: { mode: 'targeted', url: `https://api-publica.datajud.cnj.jus.br/api_publica_${endpoint}/_search`, numero: num, chat_id: $json.state.chat_id } };\n}\n\nreturn { json: { mode: 'broad', numero: num, chat_id: $json.state.chat_id } };"
+      }
+    },
+    {
+      "id": "tipo-busca",
+      "name": "10. 🔀 Tipo de Busca",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -1408,
+        48
+      ],
+      "parameters": {
+        "conditions": {
+          "string": [
+            { "value1": "={{ $json.mode }}", "operation": "equals", "value2": "targeted" }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "http-dirigida",
+      "name": "11. 🔍 HTTP: Dirigida",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        -1168,
+        -48
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.url }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "APIKey cDZHYzlZa0JadVREZDJCendQbXY6SkJlTzNjLV9TRENyQk1RdnFKZGRQdw==" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": { "parameters": [ { "name": "numeroProcesso", "value": "={{ $json.numero }}" } ] },
+        "options": {}
+      }
+    },
+    {
+      "id": "gerar-lista",
+      "name": "12. 📋 Gerar Lista",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1168,
+        176
+      ],
+      "parameters": {
+        "jsCode": "const numero = $json.numero;\nconst chat_id = $json.chat_id;\nconst tribunais = ['tst','tse','stj','stm','trf1','trf2','trf3','trf4','trf5','trf6','trt1','trt2','trt3','trt4','trt5','trt6','trt7','trt8','trt9','trt10','trt11','trt12','trt13','trt14','trt15','trt16','trt17','trt18','trt19','trt20','trt21','trt22','trt23','trt24','tjac','tjal','tjam','tjap','tjba','tjce','tjdft','tjes','tjgo','tjma','tjmg','tjms','tjmt','tjpa','tjpb','tjpe','tjpi','tjpr','tjrj','tjrn','tjro','tjrr','tjrs','tjsc','tjse','tjsp','tjto'];\n\nreturn tribunais.map(t => ({ json: { url: `https://api-publica.datajud.cnj.jus.br/api_publica_${t}/_search`, numero, chat_id } }));"
+      }
+    },
+    {
+      "id": "split-loop",
+      "name": "13. 🔄 Split Loop",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        -944,
+        176
+      ],
+      "parameters": { "batchSize": 4, "options": {} }
+    },
+    {
+      "id": "http-ampla",
+      "name": "14. 🔍 HTTP: Ampla",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        -720,
+        176
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.url }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "APIKey cDZHYzlZa0JadVREZDJCendQbXY6SkJlTzNjLV9TRENyQk1RdnFKZGRQdw==" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": { "parameters": [ { "name": "numeroProcesso", "value": "={{ $json.numero }}" } ] },
+        "options": {},
+        "onError": "continueErrorOutput"
+      }
+    },
+    {
+      "id": "encontrou",
+      "name": "15. ✅ Encontrou?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -496,
+        48
+      ],
+      "parameters": {
+        "conditions": {
+          "number": [ { "value1": "={{ $json.body?.hits?.total?.value || 0 }}", "operation": "larger", "value2": 0 } ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "openai-resumo",
+      "name": "16. 🧠 OpenAI: Resumo",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 1,
+      "position": [
+        -176,
+        32
+      ],
+      "parameters": {
+        "prompt": "={{`Você é um advogado sênior explicando para o cliente. Faça um resumo cordial e fácil de entender sobre o andamento do processo.\n\nNúmero do processo: ${$json.body.hits.hits[0]._source.numeroProcesso}\nTribunal: ${$json.body.hits.hits[0]._source.tribunal}\nÚltimos movimentos: ${JSON.stringify($json.body.hits.hits[0]._source.movimentos.slice(-3))}\n\nInclua uma mensagem de encerramento convidando o cliente a voltar se precisar de algo mais.`}}",
+        "options": {},
+        "requestOptions": {}
+      }
+    },
+    {
+      "id": "resultado-final",
+      "name": "17. 📤 Resultado Final",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [
+        32,
+        32
+      ],
+      "parameters": {
+        "chatId": "={{ $('2. ⚙️ Normalizar Dados').item.json.chat_id }}",
+        "text": "={{ $json.message.content }}",
+        "additionalFields": { "parse_mode": "Markdown" }
+      }
+    },
+    {
+      "id": "redis-limpar",
+      "name": "18. 🗑️ Redis: Limpar",
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [
+        256,
+        32
+      ],
+      "parameters": { "operation": "del" }
+    },
+    {
+      "id": "nenhum-resultado",
+      "name": "19. 🚫 Nenhum Resultado",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [
+        -256,
+        272
+      ],
+      "parameters": {
+        "chatId": "={{ $('2. ⚙️ Normalizar Dados').item.json.chat_id }}",
+        "text": "Não encontrei registros para esse número de processo nos tribunais consultados. Confira se o número (20 dígitos) está correto e me envie novamente ou digite /start para recomeçar.",
+        "additionalFields": { "parse_mode": "Markdown" }
+      }
+    }
+  ],
+  "connections": {
+    "1. 📥 Telegram Trigger": { "main": [ [ { "node": "2. ⚙️ Normalizar Dados", "type": "main", "index": 0 } ] ] },
+    "2. ⚙️ Normalizar Dados": { "main": [ [ { "node": "3. 💾 Redis: Get Session", "type": "main", "index": 0 } ] ] },
+    "3. 💾 Redis: Get Session": { "main": [ [ { "node": "4. 🧠 Cérebro da Conversa", "type": "main", "index": 0 } ] ] },
+    "4. 🧠 Cérebro da Conversa": { "main": [ [ { "node": "5. 💾 Redis: Salvar Estado", "type": "main", "index": 0 } ] ] },
+    "5. 💾 Redis: Salvar Estado": { "main": [ [ { "node": "6. 🔀 Ação: Pesquisar?", "type": "main", "index": 0 } ] ] },
+    "6. 🔀 Ação: Pesquisar?": {
+      "main": [
+        [ { "node": "8. 💬 Telegram: Aguarde", "type": "main", "index": 0 } ],
+        [ { "node": "7. 💬 Telegram: Responder", "type": "main", "index": 0 } ]
+      ]
+    },
+    "8. 💬 Telegram: Aguarde": { "main": [ [ { "node": "9. 🎯 Identificar Tribunal", "type": "main", "index": 0 } ] ] },
+    "9. 🎯 Identificar Tribunal": { "main": [ [ { "node": "10. 🔀 Tipo de Busca", "type": "main", "index": 0 } ] ] },
+    "10. 🔀 Tipo de Busca": {
+      "main": [
+        [ { "node": "11. 🔍 HTTP: Dirigida", "type": "main", "index": 0 } ],
+        [ { "node": "12. 📋 Gerar Lista", "type": "main", "index": 0 } ]
+      ]
+    },
+    "11. 🔍 HTTP: Dirigida": { "main": [ [ { "node": "15. ✅ Encontrou?", "type": "main", "index": 0 } ] ] },
+    "12. 📋 Gerar Lista": { "main": [ [ { "node": "13. 🔄 Split Loop", "type": "main", "index": 0 } ] ] },
+    "13. 🔄 Split Loop": {
+      "main": [ [ { "node": "14. 🔍 HTTP: Ampla", "type": "main", "index": 0 } ] ],
+      "alternate": [ [ { "node": "19. 🚫 Nenhum Resultado", "type": "main", "index": 0 } ] ]
+    },
+    "14. 🔍 HTTP: Ampla": { "main": [ [ { "node": "15. ✅ Encontrou?", "type": "main", "index": 0 } ] ] },
+    "15. ✅ Encontrou?": {
+      "main": [
+        [ { "node": "16. 🧠 OpenAI: Resumo", "type": "main", "index": 0 } ],
+        [ { "node": "13. 🔄 Split Loop", "type": "main", "index": 0 } ]
+      ]
+    },
+    "16. 🧠 OpenAI: Resumo": { "main": [ [ { "node": "17. 📤 Resultado Final", "type": "main", "index": 0 } ] ] },
+    "17. 📤 Resultado Final": { "main": [ [ { "node": "18. 🗑️ Redis: Limpar", "type": "main", "index": 0 } ] ] }
+  }
+}
